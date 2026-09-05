@@ -112,56 +112,71 @@ const PUSHOVER_CONFIG = {
  *  「トリガー」アイコンから行えます）
  */
 function execute() {
-  // 指定した送信元アドレスに一致するメールのスレッドを、
-  // 新しいものから最大10件取得します。
-  const threads = GmailApp.search(COMMON_CONFIG.SENDER_MAIL_ADDRESS, 0, 10);
-
-  // 該当するメールが1件も無ければ、ここで処理を終了します。
-  if (threads.length === 0) {
+  // 前回の実行がまだ終わっていない場合、同じ未読メールを二重に
+  // 通知してしまわないよう、ロックが取れなければ何もせず終了します。
+  // （このメールは既読にしないので、今回見送っても次回のトリガーで
+  //  改めて検知・通知されます）
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    Logger.log('前回の実行がまだ終わっていないため、今回はスキップします。');
     return;
   }
 
-  threads.forEach(thread => {
-    // スレッド内の各メールを取得します。
-    const messages = GmailApp.getMessagesForThread(thread);
+  try {
+    // 指定した送信元アドレスに一致するメールのスレッドを、
+    // 新しいものから最大10件取得します。
+    const threads = GmailApp.search(COMMON_CONFIG.SENDER_MAIL_ADDRESS, 0, 10);
 
-    for (let i = 0; i < messages.length; i++) { // forEach文だとcontinueが使えないのでfor文
-      const message = messages[i];
-
-      // すでに読んだメール（既読）は通知の対象外にします。
-      // これにより、同じメールで何度も通知が来ることを防いでいます。
-      if (message.isUnread()) {
-        const subject = message.getSubject();
-
-        // 件名に「無視したい文字列」が含まれていないかチェックします。
-        // 含まれていれば、このメールへの通知はスキップします。
-        let isInclude = false;
-        for (let l = 0; l < COMMON_CONFIG.IGNORE_STRINGS.length; l++){
-          if (subject.includes(COMMON_CONFIG.IGNORE_STRINGS[l])) {
-            isInclude = true;
-            break;
-          }
-        }
-        if (isInclude) {
-          continue;
-        }
-
-        const date = message.getDate();
-        // 本文が長すぎるとLINEメッセージとして送りにくいため、
-        // 先頭から500文字だけを取り出しています。
-        let contents = message.getPlainBody().slice(0, 500);
-
-        // 本文中の空白行（改行だけの行）を取り除き、見やすく整えます。
-        contents = removeEmptyLines(contents);
-
-        // LINEへメッセージを送信します。
-        sendLine(date, subject, contents);
-
-        // Pushoverへも通知を送ります（マナーモードでも鳴る緊急通知）。
-        sendPushover();
-      }
+    // 該当するメールが1件も無ければ、ここで処理を終了します。
+    if (threads.length === 0) {
+      return;
     }
-  });
+
+    threads.forEach(thread => {
+      // スレッド内の各メールを取得します。
+      const messages = GmailApp.getMessagesForThread(thread);
+
+      for (let i = 0; i < messages.length; i++) { // forEach文だとcontinueが使えないのでfor文
+        const message = messages[i];
+
+        // すでに読んだメール（既読）は通知の対象外にします。
+        // これにより、同じメールで何度も通知が来ることを防いでいます。
+        if (message.isUnread()) {
+          const subject = message.getSubject();
+
+          // 件名に「無視したい文字列」が含まれていないかチェックします。
+          // 含まれていれば、このメールへの通知はスキップします。
+          let isInclude = false;
+          for (let l = 0; l < COMMON_CONFIG.IGNORE_STRINGS.length; l++){
+            if (subject.includes(COMMON_CONFIG.IGNORE_STRINGS[l])) {
+              isInclude = true;
+              break;
+            }
+          }
+          if (isInclude) {
+            continue;
+          }
+
+          const date = message.getDate();
+          // 本文が長すぎるとLINEメッセージとして送りにくいため、
+          // 先頭から500文字だけを取り出しています。
+          let contents = message.getPlainBody().slice(0, 500);
+
+          // 本文中の空白行（改行だけの行）を取り除き、見やすく整えます。
+          contents = removeEmptyLines(contents);
+
+          // LINEへメッセージを送信します。
+          sendLine(date, subject, contents);
+
+          // Pushoverへも通知を送ります（マナーモードでも鳴る緊急通知）。
+          sendPushover();
+        }
+      }
+    });
+  } finally {
+    // 次回以降の実行がロック待ちで詰まらないよう、必ず解放します。
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -181,7 +196,7 @@ function sendPushover() {
     expire: PUSHOVER_CONFIG.EXPIRE_SECONDS,
     sound: PUSHOVER_CONFIG.SOUND,
   };
- 
+
   const options = {
     method: 'post',
     payload: payload,
@@ -260,7 +275,12 @@ function removeEmptyLines(str) {
 function callApi(url, options) {
   try {
     const response = UrlFetchApp.fetch(url, options);
-    Logger.log('API実行に成功しました。レスポンス: ' + response.getContentText());
+    const responseCode = response.getResponseCode();
+    if (responseCode >= 200 && responseCode < 300) {
+      Logger.log('API実行に成功しました。レスポンス: ' + response.getContentText());
+    } else {
+      Logger.log('APIがエラーを返しました。ステータスコード: ' + responseCode + ' レスポンス: ' + response.getContentText());
+    }
   } catch (error) {
     Logger.log('API実行中にエラーが発生しました: ' + error);
   }
