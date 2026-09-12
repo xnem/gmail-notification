@@ -243,7 +243,8 @@ function sendLine(date, subject, contents) {
   const options = {
     'method': 'post',
     'headers': headers,
-    'payload': JSON.stringify(payload)
+    'payload': JSON.stringify(payload),
+    'muteHttpExceptions': true, // エラー時もスクリプトを止めず、レスポンス内容をログで確認できるようにする設定
   };
 
   callApi(LINE_CONFIG.API_URL, options);
